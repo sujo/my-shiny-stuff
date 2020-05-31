@@ -2,10 +2,17 @@
 
 ## Planned features
 
+### Features
+
+* Show weapons and equipment item stats
 * Filter weapons and equipment by item stats
+* Show binding info
 * Include the shared inventory slots
 * Include the equipped items
 
+### Fixes
+
+* Remove HTML tags from description texts received from the API
 
 ## v1.0.0, 2020-05-31
 
