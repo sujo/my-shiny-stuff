@@ -1,0 +1,81 @@
+
+@charset "utf-8";
+
+@import "~bulma/bulma";
+
+div.has-popup {
+  position: relative;
+  display: inline-block;
+}
+
+div.item > div.popup {
+  bottom: 100%;
+  left: 50%;
+  margin-left: -100px;
+  width: 200px;
+}
+
+div.info {
+  position: absolute;
+  width: 70%;
+  margin: 0 15%;
+  z-index: 1;
+}
+
+div.has-popup > div.popup {
+  visibility: hidden;
+  opacity: 0;
+  z-index: 1;
+  transition: opacity 0.3s;
+  line-height: 1.3em;
+  background-color: #444;
+  border: 2px solid #345;
+  border-radius: 6px;
+  padding: 5px;
+  position: absolute;
+}
+
+div.has-popup:hover > div.popup {
+  visibility: visible;
+  opacity: 1;
+}
+
+p.itemname {
+  color: #fff;
+  font-style: bold;
+}
+
+p.description {
+  font-size: medium;
+  margin: 4px;
+  color: #7ae;
+}
+
+p.item-tags {
+  font-size: medium;
+  margin: 4px;
+  color: #e7a;
+}
+
+div.tags {
+  width: 30%;
+}
+
+a.tag.active:hover {
+  text-decoration: line-through;
+}
+
+a:hover {
+  color: orange;
+}
+
+span.icon {
+  width: 32px;
+  height: 32px;
+}
+
+.section {
+  padding: 2em 32px;
+}
+
+// vim: et sw=2 ts=2
