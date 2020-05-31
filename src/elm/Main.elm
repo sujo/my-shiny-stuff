@@ -366,6 +366,10 @@ viewInfo =
                     , text "."
                     ]
                 ,  p [ style "margin-top" "0.3em" ]
+                    [ a [ href "https://github.com/sujo/my-shiny-stuff/blob/master/CHANGES.md" ]
+                        [ text "Release notes" ]
+                    ]
+                ,  p [ style "margin-top" "0.3em" ]
                     [ text "All images, the favicon and the item descriptions are under "
                     , a [ href "https://www.guildwars2.com/en/legal/guild-wars-2-content-terms-of-use/" ] [ text "copyright by ArenaNet, LLC" ]
                     , text "."
