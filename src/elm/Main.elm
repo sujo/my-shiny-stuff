@@ -44,7 +44,7 @@ type alias Model =
     , showInfo : Bool
     , bank : List GW2.ContainerItem
     , sharedInventory : List GW2.ContainerItem
-    , characters : List GW2.Character
+    , characters : Dict String GW2.Character
     , itemSpecs : Dict Int GW2.ItemSpec
     , loading : Int
     , shiny : String
@@ -62,7 +62,7 @@ init flags =
             , showInfo = False
             , bank = []
             , sharedInventory = []
-            , characters = []
+            , characters = Dict.empty
             , itemSpecs = Dict.empty
             , loading = 0
             , shiny = ""
@@ -99,6 +99,7 @@ type Msg
     | ReceivedSharedInventory (Result Http.Error (List GW2.ContainerItem) )
     | ReceivedItemSpecs (Result Http.Error (List GW2.ItemSpec) )
     | ReceivedCharacters (Result Http.Error (List GW2.Character) )
+    | ReceivedEquipment String (Result Http.Error (List GW2.ContainerItem) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -237,10 +238,50 @@ Please check if the API key is valid and has characters permissions.""" ]
                     |> List.map .bags
                     |> List.concat
 
+                newmodel = { model | characters =
+                        characters
+                        |> List.map (\ ch -> ( ch.name, ch ) )
+                        |> Dict.fromList
+                    }
+                    |> subRequest
+
+                cnames = List.map .name characters
             in
-                ( { model | characters = characters } |> subRequest, Cmd.none )
+                List.foldl loadEquipment ( newmodel, Cmd.none ) cnames
                 |> loadItemNames items model.itemSpecs
                 
+        ReceivedEquipment _ (Err (Http.BadStatus 401)) ->
+            -- This happens when the API key is invalid or does not have sufficient permissions.
+            ( { model
+                | status = Configure
+                , errors = [ """Error 401 from the GW2 API while loading equipment tabs.
+Please check if the API key is valid and has character permissions.""" ]
+              } |> subRequest
+              , Cmd.none )
+
+        ReceivedEquipment _ (Err err) ->
+            ( { model 
+                  | errors = ( "Error loading equipment tabs from the GW2 API: "
+                      ++ httpErrString err)
+                      :: model.errors
+              }
+              |> subRequest
+            , Cmd.none )
+
+        ReceivedEquipment name (Ok equip) ->
+            case Dict.get name model.characters of
+                Nothing ->
+                    ( model |> subRequest, Cmd.none )
+
+                Just oldChar ->
+                    let
+                        char = { oldChar | equipmentTabs = equip }
+                    in
+                        ( { model | characters = Dict.insert name char model.characters }
+                            |> subRequest
+                        , Cmd.none )
+                        |> loadItemNames equip model.itemSpecs
+
 
 
 -- SUBSCRIPTIONS
@@ -275,7 +316,7 @@ view model =
                         (Dict.union ts ts0, hl :: hl0)
                 )
                 (Dict.empty, [])
-                model.characters
+                (Dict.values model.characters)
 
         tags = Dict.union itemTagsBank itemTagsChars
             |> Dict.union itemTagsShared
@@ -475,8 +516,8 @@ viewItem item =
 --     ]
 
 
-viewItems : Dict Int GW2.ItemSpec -> (GW2.ContainerItem -> Bool) -> List GW2.ContainerItem -> (ItemTags, Html Msg, Int)
-viewItems specs filter allItems =
+viewItems : Dict Int GW2.ItemSpec -> (GW2.ContainerItem -> Bool) -> (Html Msg -> Html Msg) -> List GW2.ContainerItem -> (ItemTags, Html Msg, Int)
+viewItems specs filter wrapper allItems =
     let
         items = List.filter filter allItems
 
@@ -485,54 +526,69 @@ viewItems specs filter allItems =
                 case Dict.get id specs of
                     Just spec ->
                         let
-                            (newTags, html) = viewItem spec
+                            (newTags, h) = viewItem spec
                         in
-                            (Dict.union newTags t, html :: l, n0 + 1)
+                            (Dict.union newTags t, h:: l, n0 + 1)
 
                     Nothing ->
                         (t, (span [ class ("missing " ++ String.fromInt id) ] []) :: l, n0)
                 )
                 (Dict.empty, [], 0)
+
+        html = case n of
+            0 -> div [] []
+            _ ->
+                wrapper
+                ( div [ class "container", style "line-height" "0" ] itemHtml )
     in
-        (itemTags, div [ class "container", style "line-height" "0" ] itemHtml, n)
+        (itemTags, html, n)
 
 
 viewContainer : String -> Dict Int GW2.ItemSpec -> (GW2.ContainerItem -> Bool) -> List GW2.ContainerItem -> (ItemTags, Html Msg)
 viewContainer title specs filter container =
     let
-        (itemTags, items, n) = viewItems specs filter container
-    in   
-        (itemTags,
-            (case n of
-                0 ->
-                    div [] []
+        wrapper items =
+            section [ class "section" ]
+            [ div [class "container" ]
+                [ h3 [ class "title is-3" ] [ text title ]
+                , items
+                ]
+            ]
 
-                _ ->
-                    section [ class "section" ] [ div [class "container" ]
-                        [h3 [ class "title is-3" ] [ text title ]
-                        , items
-                        ]
-                    ]
-            )
-        )
+        (itemTags, html, _) = viewItems specs filter wrapper container
+    in   
+        (itemTags, html)
 
  
 viewCharacter : Dict Int GW2.ItemSpec -> (GW2.ContainerItem -> Bool) -> GW2.Character -> (ItemTags, Html Msg)
 viewCharacter specs filter c =
     let
-        (itemTags, bags, nb) = viewItems specs filter c.bags
+        wrapper title items =
+            section [ class "section" ]
+                [ div [class "container" ]
+                    [ h4 [ class "title is-4" ] [ text title ]
+                    , items
+                    ]
+                ]
+
+        (itemTags, bagsHtml, nb) = viewItems specs filter (wrapper "Bags") c.bags
+
+        (equipTags, equipHtml, ne) = viewItems specs filter (wrapper "Equipment") c.equipmentTabs
+
+        tags = Dict.union itemTags equipTags
     in
-        (itemTags,
-            (case nb of
+        (tags,
+            (case nb + ne of
                 0 ->
                     div [] []
 
                 _ ->
                     section [ class "section" ] [ div [class "container" ]
                         [ h3 [ class "title is-3" ] [ text ("Character: " ++ c.name) ]
-                        , h4 [ class "title is-4" ] [ text "Bags" ]
-                        , bags
-                        ] ]
+                        , equipHtml
+                        , bagsHtml
+                        ]
+                    ]
             )
         )
 
@@ -578,6 +634,14 @@ loadCharacters ( model, cmd ) =
     addRequest
         (GW2.charactersEndpoint model.apiKey "all")
         ReceivedCharacters
+        ( model, cmd )
+
+
+loadEquipment : String -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+loadEquipment name ( model, cmd ) =
+    addRequest
+        (GW2.equipmentEndpoint model.apiKey name)
+        ( ReceivedEquipment name )
         ( model, cmd )
 
 

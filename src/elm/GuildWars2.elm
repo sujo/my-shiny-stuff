@@ -17,6 +17,7 @@ type alias ContainerItem =
 type alias Character =
     { name: String
     , bags: (List ContainerItem)
+    , equipmentTabs : (List ContainerItem)
     }
 
 type ItemSubType
@@ -139,7 +140,7 @@ sharedInventoryEndpoint apiKey =
 
 characterD : JD.Decoder Character
 characterD =
-    JD.map2 Character
+    JD.map3 Character
         (JD.field "name" JD.string)
         ( containerD
         |> JD.field "inventory"
@@ -147,6 +148,28 @@ characterD =
         |> JD.map List.concat
         |> JD.field "bags"
         )
+        (JD.succeed []) -- equipmentTabs, not filled here
+
+
+-- parses one equipment tab
+equipmentTabD : JD.Decoder (List ContainerItem)
+equipmentTabD =
+    JD.list
+        ( JD.map4 ContainerItem
+            (JD.field "id" JD.int)
+            (JD.succeed 1) -- count
+            (JD.maybe (JD.field "binding" JD.string) )
+            (JD.maybe (JD.field "bound_to" JD.string) )
+        )
+
+
+equipmentEndpoint : String -> String -> ( String, JD.Decoder (List ContainerItem) )
+equipmentEndpoint apiKey name =
+    ( absolute [ "v2", "characters", name, "equipmenttabs" ] [ string "tabs" "all", string "access_token" apiKey ]
+    , ( JD.list
+            ( JD.field "equipment" equipmentTabD )
+        ) |> JD.map List.concat
+    )
 
 
 apiRequest : ( String, JD.Decoder a) -> (Result Http.Error a -> msg) -> Cmd msg
