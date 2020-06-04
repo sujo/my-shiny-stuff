@@ -7,12 +7,15 @@
 * Show weapons and equipment item stats
 * Filter weapons and equipment by item stats
 * Show binding info
-* Include the shared inventory slots
 * Include the equipped items
 
 ### Fixes
 
 * Remove HTML tags from description texts received from the API
+
+## v1.1.0 / not released yet
+
+* Show the shared inventory slots
 
 ## v1.0.1 / 2020-05-31
 

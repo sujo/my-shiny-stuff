@@ -43,8 +43,9 @@ type alias Model =
     , errors : List String
     , showInfo : Bool
     , bank : List GW2.ContainerItem
+    , sharedInventory : List GW2.ContainerItem
     , characters : List GW2.Character
-    , items : Dict Int GW2.ItemSpec
+    , itemSpecs : Dict Int GW2.ItemSpec
     , loading : Int
     , shiny : String
     , activeTags : ItemTags
@@ -60,8 +61,9 @@ init flags =
             , errors = []
             , showInfo = False
             , bank = []
+            , sharedInventory = []
             , characters = []
-            , items = Dict.empty
+            , itemSpecs = Dict.empty
             , loading = 0
             , shiny = ""
             , activeTags = Dict.empty
@@ -71,6 +73,7 @@ init flags =
             Ok apiKey_ ->
                 ( { model | status = ShowItems, apiKey = apiKey_ } , Cmd.none )
                 |> loadBank
+                |> loadSharedInventory
                 |> loadCharacters
 
             Err _ ->
@@ -93,6 +96,7 @@ type Msg
     | AddTag String ItemTagValue
     | RemoveTag String
     | ReceivedBank (Result Http.Error (List GW2.ContainerItem) )
+    | ReceivedSharedInventory (Result Http.Error (List GW2.ContainerItem) )
     | ReceivedItemSpecs (Result Http.Error (List GW2.ItemSpec) )
     | ReceivedCharacters (Result Http.Error (List GW2.Character) )
 
@@ -114,6 +118,7 @@ update msg model =
             , setStorage (JE.object [ ( "apiKey", JE.string model.apiKey ) ] )
             )
             |> loadBank
+            |> loadSharedInventory
             |> loadCharacters
 
         NoSaveConfig ->
@@ -154,7 +159,29 @@ Please check if the API key is valid and has bank permissions.""" ]
 
         ReceivedBank (Ok bankSlots) ->
                 ( { model | bank = bankSlots } |> subRequest, Cmd.none )
-                |> loadItemNames bankSlots model.items
+                |> loadItemNames bankSlots model.itemSpecs
+
+        ReceivedSharedInventory (Err (Http.BadStatus 401)) ->
+            -- This happens when the API key is invalid or does not have sufficient permissions.
+            ( { model
+                | status = Configure
+                , errors = [ """Error 401 from the GW2 API while loading the shared inventory.
+Please check if the API key is valid and has inventory permissions.""" ]
+              } |> subRequest
+              , Cmd.none )
+
+        ReceivedSharedInventory (Err err) ->
+            ( { model 
+                  | errors = ( "Error loading the shared inventory from the GW2 API: "
+                      ++ httpErrString err)
+                      :: model.errors
+              }
+              |> subRequest
+            , Cmd.none )
+
+        ReceivedSharedInventory (Ok invSlots) ->
+                ( { model | sharedInventory = invSlots } |> subRequest, Cmd.none )
+                |> loadItemNames invSlots model.itemSpecs
 
         ReceivedItemSpecs (Err (Http.BadStatus 404)) ->
             -- This happens when an item ID is unknown to the items endpoint.
@@ -172,15 +199,15 @@ Please check if the API key is valid and has bank permissions.""" ]
 
         ReceivedItemSpecs (Ok specs) ->
             let
-                items
+                itemSpecs
                      = specs
                     |> List.map (\a -> (a.id, a) )
                     |> Dict.fromList
-                    |> Dict.union model.items
+                    |> Dict.union model.itemSpecs
 
             in
                 ( { model
-                    | items = items
+                    | itemSpecs = itemSpecs
                     }
                     |> subRequest
                  , Cmd.none )
@@ -212,7 +239,7 @@ Please check if the API key is valid and has characters permissions.""" ]
 
             in
                 ( { model | characters = characters } |> subRequest, Cmd.none )
-                |> loadItemNames items model.items
+                |> loadItemNames items model.itemSpecs
                 
 
 
@@ -233,15 +260,17 @@ view model =
     let
         title = "My Shiny Stuff"
 
-        filter = itemFilter model.activeTags model.shiny model.items
+        filter = itemFilter model.activeTags model.shiny model.itemSpecs
 
-        (itemTagsBank, htmlBank) = viewBank model.items filter model.bank
+        (itemTagsBank, htmlBank) = viewContainer "Bank" model.itemSpecs filter model.bank
+
+        (itemTagsShared, htmlShared) = viewContainer "Shared Inventory" model.itemSpecs filter model.sharedInventory
 
         (itemTagsChars, htmlChars) = 
             List.foldr
                 (\c (ts0, hl0) ->
                     let
-                        (ts, hl) = viewCharacter model.items filter c
+                        (ts, hl) = viewCharacter model.itemSpecs filter c
                     in
                         (Dict.union ts ts0, hl :: hl0)
                 )
@@ -249,6 +278,7 @@ view model =
                 model.characters
 
         tags = Dict.union itemTagsBank itemTagsChars
+            |> Dict.union itemTagsShared
             |> Dict.union model.activeTags
 
         content = 
@@ -260,6 +290,7 @@ view model =
                 ShowItems ->
                     viewControls model.shiny tags (model.loading > 0)
                     :: htmlBank
+                    :: htmlShared
                     :: List.append htmlChars
                         [ div [ class "section" ] [ text "Nothing else matters." ] ]
 
@@ -466,10 +497,10 @@ viewItems specs filter allItems =
         (itemTags, div [ class "container", style "line-height" "0" ] itemHtml, n)
 
 
-viewBank : Dict Int GW2.ItemSpec -> (GW2.ContainerItem -> Bool) -> List GW2.ContainerItem -> (ItemTags, Html Msg)
-viewBank specs filter bank =
+viewContainer : String -> Dict Int GW2.ItemSpec -> (GW2.ContainerItem -> Bool) -> List GW2.ContainerItem -> (ItemTags, Html Msg)
+viewContainer title specs filter container =
     let
-        (itemTags, items, n) = viewItems specs filter bank
+        (itemTags, items, n) = viewItems specs filter container
     in   
         (itemTags,
             (case n of
@@ -478,7 +509,7 @@ viewBank specs filter bank =
 
                 _ ->
                     section [ class "section" ] [ div [class "container" ]
-                        [h3 [ class "title is-3" ] [ text "Bank" ]
+                        [h3 [ class "title is-3" ] [ text title ]
                         , items
                         ]
                     ]
@@ -531,6 +562,14 @@ loadBank ( model, cmd ) =
     addRequest
         (GW2.bankEndpoint model.apiKey)
         ReceivedBank
+        ( model, cmd )
+
+
+loadSharedInventory : ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+loadSharedInventory ( model, cmd ) =
+    addRequest
+        (GW2.sharedInventoryEndpoint model.apiKey)
+        ReceivedSharedInventory
         ( model, cmd )
 
 

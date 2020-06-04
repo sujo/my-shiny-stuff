@@ -58,13 +58,6 @@ charactersEndpoint apiKey name =
     )
 
 
-bankEndpoint : String -> (String, JD.Decoder (List ContainerItem) )
-bankEndpoint apiKey =
-    ( absolute [ "v2", "account", "bank" ] [ string "access_token" apiKey ]
-    , containerD
-    )
-
-
 itemTypeD : JD.Decoder ItemType
 itemTypeD =
     let
@@ -113,12 +106,6 @@ itemsEndpoint ids =
        )
     )
 
-containerD : JD.Decoder (List ContainerItem)
-containerD =
-    JD.map
-        (List.filterMap (\a->a))
-        (JD.list (JD.nullable containerItemD))
-
 
 containerItemD : JD.Decoder ContainerItem
 containerItemD =
@@ -127,6 +114,27 @@ containerItemD =
     (JD.field "count" JD.int)
     (JD.maybe (JD.field "binding" JD.string) )
     (JD.maybe (JD.field "bound_to" JD.string) )
+
+
+containerD : JD.Decoder (List ContainerItem)
+containerD =
+    JD.map
+        (List.filterMap (\a->a))
+        (JD.list (JD.nullable containerItemD))
+
+
+bankEndpoint : String -> (String, JD.Decoder (List ContainerItem) )
+bankEndpoint apiKey =
+    ( absolute [ "v2", "account", "bank" ] [ string "access_token" apiKey ]
+    , containerD
+    )
+
+
+sharedInventoryEndpoint : String -> (String, JD.Decoder (List ContainerItem) )
+sharedInventoryEndpoint apiKey =
+    ( absolute [ "v2", "account", "inventory" ] [ string "access_token" apiKey ]
+    , containerD
+    )
 
 
 characterD : JD.Decoder Character
