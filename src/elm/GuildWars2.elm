@@ -3,6 +3,7 @@ module GuildWars2 exposing (..)
 import Http
 import Url.Builder exposing (absolute, int, string)
 import Json.Decode as JD
+import Dict exposing (Dict)
 
 
 -- Types
@@ -35,7 +36,11 @@ type alias ItemSpec =
     , iconUrl : Maybe String
     , description : Maybe String
     , iType : ItemType
+    , statsChoices : List String
     }
+
+type alias ItemStats = Dict Int String
+
 
 -- Functions
 
@@ -92,19 +97,55 @@ itemTypeD =
             )
 
 
-itemsEndpoint : List Int -> (String, JD.Decoder (List ItemSpec))
-itemsEndpoint ids =
+itemsEndpoint : List Int -> ItemStats -> (String, JD.Decoder (List ItemSpec))
+itemsEndpoint ids stats =
     ( absolute [ "v2", "items" ] [ ids
         |> List.map String.fromInt
         |> String.join ","
         |> string "ids" ]
-    , JD.list (JD.map5 ItemSpec
+    , JD.list (JD.map6 ItemSpec
         (JD.field "id" JD.int)
         (JD.field "name" JD.string)
         (JD.maybe (JD.field "icon" JD.string) )
         (JD.maybe (JD.field "description" JD.string) )
         itemTypeD
-       )
+        (JD.map
+            (List.filterMap (\id -> Dict.get id stats))
+            (JD.map2 (\inf ch ->
+                case (inf, ch) of
+                    (Nothing, Nothing) -> []
+                    (Nothing, Just l) -> l
+                    (Just s, Nothing) -> [s]
+                    (Just s, Just l) -> s::l
+                )
+                (JD.maybe
+                    (JD.field "infix_upgrade"
+                        (JD.field "id" JD.int)
+                    )
+                )
+                (JD.maybe
+                    (JD.field "stat_choices" (JD.list JD.int))
+                )
+            )
+        )
+    ) )
+
+
+itemStatsD : JD.Decoder (Dict Int String)
+itemStatsD =
+    JD.map Dict.fromList
+        ( JD.list
+            (JD.map2 Tuple.pair
+                (JD.field "id" JD.int)
+                (JD.field "name" JD.string)
+            )
+        )
+
+
+itemStatsEndpoint : (String, JD.Decoder ItemStats)
+itemStatsEndpoint =
+    ( absolute [ "v2", "itemstats" ] [ string "ids" "all" ]
+    , itemStatsD
     )
 
 
