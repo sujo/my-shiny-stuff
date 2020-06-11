@@ -8,7 +8,7 @@ import Http
 import Dict exposing (Dict)
 import Json.Decode as JD
 import Json.Encode as JE
-import Set
+import Set exposing (Set)
 
 import Bulma exposing (viewTextField, viewButton, viewErrors, hero)
 import GuildWars2 as GW2
@@ -27,18 +27,26 @@ main =
 
 -- MODEL
 
-type Status
+type Page
     = Configure
     | ShowItems
 
 
+type alias StatsChoices = Dict Int GW2.ItemStats
+
 -- Tag name isActive itemFilter
-type ItemTagValue = TagValue Bool (GW2.ItemSpec -> Bool)
+type ItemTagValue 
+   = TagValue Bool (GW2.ItemSpec -> Bool)
+   | StatsTagValue Bool -- single stat filter by the name of the tag, e.g. "Power"
 
 type alias ItemTags = Dict String ItemTagValue
 
+-- The FilterFunction return true if the item matches, and a map that contains the additional stats names
+-- for matching statsChoices.
+type alias FilterFunction = (GW2.ContainerItem -> (Bool, Set String))
+
 type alias Model =
-    { status : Status
+    { page : Page
     , apiKey : String
     , errors : List String
     , showInfo : Bool
@@ -46,9 +54,11 @@ type alias Model =
     , sharedInventory : List GW2.ContainerItem
     , characters : Dict String GW2.Character
     , itemSpecs : Dict Int GW2.ItemSpec
+    , itemStatsMap : Dict Int GW2.ItemStats
     , loading : Int
     , shiny : String
-    , activeTags : ItemTags
+    , itemTags : ItemTags
+    , statsChoices : StatsChoices -- the possible itemStats matching the active item tags
     }
 
 
@@ -56,7 +66,7 @@ init : JD.Value -> ( Model, Cmd Msg )
 init flags =
     let
         model =
-            { status = Configure
+            { page = Configure
             , apiKey = ""
             , errors = []
             , showInfo = False
@@ -64,20 +74,21 @@ init flags =
             , sharedInventory = []
             , characters = Dict.empty
             , itemSpecs = Dict.empty
+            , itemStatsMap = Dict.empty
             , loading = 0
             , shiny = ""
-            , activeTags = Dict.empty
+            , itemTags = Dict.empty
+            , statsChoices = Dict.empty
             }
     in
         case JD.decodeValue (JD.field "apiKey" JD.string) flags of
             Ok apiKey_ ->
-                ( { model | status = ShowItems, apiKey = apiKey_ } , Cmd.none )
-                |> loadBank
-                |> loadSharedInventory
-                |> loadCharacters
+                ( { model | page = ShowItems, apiKey = apiKey_ } , Cmd.none )
+                |> loadItemStats
 
             Err _ ->
                 ( model , Cmd.none )
+                |> loadItemStats
 
 
 
@@ -95,6 +106,7 @@ type Msg
     | HideInfo
     | AddTag String ItemTagValue
     | RemoveTag String
+    | ReceivedItemStats (Result Http.Error (Dict Int GW2.ItemStats) )
     | ReceivedBank (Result Http.Error (List GW2.ContainerItem) )
     | ReceivedSharedInventory (Result Http.Error (List GW2.ContainerItem) )
     | ReceivedItemSpecs (Result Http.Error (List GW2.ItemSpec) )
@@ -104,183 +116,268 @@ type Msg
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
-    case msg of
-        ApiKeyInput s ->
-            ( { model | apiKey = s }, Cmd.none )
+    let
+        -- For each StatsTagValue, filter the remaining statsChoices.
+        filterStatsChoices : ItemTags -> StatsChoices -> StatsChoices
+        filterStatsChoices itemTags statsChoices
+            = Dict.foldr (\stat tag scs ->
+                case tag of
+                    StatsTagValue True ->
+                        Dict.filter
+                            (\_ { stats } -> List.member stat stats)
+                            scs
 
-        ShinyInput s ->
-            ( { model | shiny = String.toLower s }, Cmd.none )
+                    _ -> scs
+                )
+                statsChoices
+                itemTags
 
-        GoConfigure ->
-            ( { model | status = Configure }, Cmd.none )
+    in
+        case msg of
+            ApiKeyInput s ->
+                ( { model | apiKey = s }, Cmd.none )
 
-        SaveConfig ->
-            ( { model | status = ShowItems, errors = [] }
-            , setStorage (JE.object [ ( "apiKey", JE.string model.apiKey ) ] )
-            )
-            |> loadBank
-            |> loadSharedInventory
-            |> loadCharacters
+            ShinyInput s ->
+                ( { model | shiny = String.toLower s }, Cmd.none )
 
-        NoSaveConfig ->
-            ( { model | status = ShowItems }, Cmd.none )
+            GoConfigure ->
+                ( { model | page = Configure }, Cmd.none )
 
-        ShowInfo ->
-            ( { model | showInfo = True }, Cmd.none )
+            SaveConfig ->
+                ( { model | page = ShowItems, errors = [] }
+                , setStorage (JE.object [ ( "apiKey", JE.string model.apiKey ) ] )
+                )
+                |> loadBank
+                |> loadSharedInventory
+                |> loadCharacters
 
-        HideInfo ->
-            ( { model | showInfo = False }, Cmd.none )
+            NoSaveConfig ->
+                ( { model | page = ShowItems }, Cmd.none )
 
-        AddTag s t ->
-            ( { model | activeTags = Dict.insert s t model.activeTags }, Cmd.none)
+            ShowInfo ->
+                ( { model | showInfo = True }, Cmd.none )
 
-        RemoveTag s ->
-            ( { model | activeTags = Dict.remove s model.activeTags }, Cmd.none)
+            HideInfo ->
+                ( { model | showInfo = False }, Cmd.none )
 
-        ClearErrors ->
-            ( { model | errors = [] }, Cmd.none )
+            AddTag name t ->
+                let
+                    itemTags = Dict.insert name t model.itemTags
 
-        ReceivedBank (Err (Http.BadStatus 401)) ->
-            -- This happens when the API key is invalid or does not have sufficient permissions.
-            ( { model
-                | status = Configure
-                , errors = [ """Error 401 from the GW2 API while loading the bank.
-Please check if the API key is valid and has bank permissions.""" ]
-              } |> subRequest
-              , Cmd.none )
+                    statsChoices =
+                        case t of
+                            StatsTagValue True ->
+                                filterStatsChoices itemTags model.itemStatsMap
 
-        ReceivedBank (Err err) ->
-            ( { model 
-                  | errors = ( "Error loading the bank from the GW2 API: "
-                      ++ httpErrString err)
-                      :: model.errors
-              }
-              |> subRequest
-            , Cmd.none )
+                            _ ->
+                                model.statsChoices
 
-        ReceivedBank (Ok bankSlots) ->
-                ( { model | bank = bankSlots } |> subRequest, Cmd.none )
-                |> loadItemNames bankSlots model.itemSpecs
+                in
+                    ( { model
+                        | itemTags = itemTags
+                        , statsChoices = statsChoices
+                        } , Cmd.none)
 
-        ReceivedSharedInventory (Err (Http.BadStatus 401)) ->
-            -- This happens when the API key is invalid or does not have sufficient permissions.
-            ( { model
-                | status = Configure
-                , errors = [ """Error 401 from the GW2 API while loading the shared inventory.
-Please check if the API key is valid and has inventory permissions.""" ]
-              } |> subRequest
-              , Cmd.none )
+            RemoveTag s ->
+                let
+                    tag = Dict.get s model.itemTags
 
-        ReceivedSharedInventory (Err err) ->
-            ( { model 
-                  | errors = ( "Error loading the shared inventory from the GW2 API: "
-                      ++ httpErrString err)
-                      :: model.errors
-              }
-              |> subRequest
-            , Cmd.none )
+                    itemTags = Dict.remove s model.itemTags
 
-        ReceivedSharedInventory (Ok invSlots) ->
-                ( { model | sharedInventory = invSlots } |> subRequest, Cmd.none )
-                |> loadItemNames invSlots model.itemSpecs
+                    statsChoices =
+                        case tag of
+                            Just (StatsTagValue True) ->
+                                case hasActiveStatsTagValues itemTags of
+                                    False ->
+                                        model.itemStatsMap
 
-        ReceivedItemSpecs (Err (Http.BadStatus 404)) ->
-            -- This happens when an item ID is unknown to the items endpoint.
-            -- The item ID is of no use to the user, so we ignore this specific error code.
-            ( model |> subRequest, Cmd.none )
+                                    True ->
+                                        filterStatsChoices itemTags model.itemStatsMap
+                                
+                            _ ->
+                                -- no relevant change to the tags, so we don't need to update the statsChoices
+                                model.statsChoices
 
-        ReceivedItemSpecs (Err err) ->
-            ( { model 
-                | errors = ( "Error loading item names from the GW2 API: "
-                            ++ httpErrString err)
-                            :: model.errors
-              }
-              |> subRequest
-            , Cmd.none )
+                in
+                    ( { model
+                        | itemTags = itemTags
+                        , statsChoices = statsChoices
+                        } , Cmd.none)
 
-        ReceivedItemSpecs (Ok specs) ->
-            let
-                itemSpecs
-                     = specs
-                    |> List.map (\a -> (a.id, a) )
-                    |> Dict.fromList
-                    |> Dict.union model.itemSpecs
+            ClearErrors ->
+                ( { model | errors = [] }, Cmd.none )
 
-            in
+            ReceivedItemStats (Err err) ->
+                ( { model 
+                      | errors = ( "Error loading item stats from the GW2 API: "
+                          ++ httpErrString err)
+                          :: model.errors
+                  }
+                  |> subRequest
+                , Cmd.none )
+
+            ReceivedItemStats (Ok itemStatsMap) ->
+                let
+                    mc =
+                        ( { model
+                            | itemStatsMap = itemStatsMap
+                            , statsChoices = itemStatsMap
+                            } |> subRequest
+                        , Cmd.none
+                        )
+                in
+                    case model.page of
+                        Configure ->
+                            mc
+
+                        ShowItems ->
+                            mc
+                            |> loadBank
+                            |> loadSharedInventory
+                            |> loadCharacters
+
+
+            ReceivedBank (Err (Http.BadStatus 401)) ->
+                -- This happens when the API key is invalid or does not have sufficient permissions.
                 ( { model
-                    | itemSpecs = itemSpecs
-                    }
-                    |> subRequest
-                 , Cmd.none )
+                    | page = Configure
+                    , errors = [ """Error 401 from the GW2 API while loading the bank.
+    Please check if the API key is valid and has bank permissions.""" ]
+                  } |> subRequest
+                  , Cmd.none )
 
-        ReceivedCharacters (Err (Http.BadStatus 401)) ->
-            -- This happens when the API key is invalid or does not have sufficient permissions.
-            ( { model
-                | status = Configure
-                , errors = [ """Error 401 from the GW2 API while loading the characters.
-Please check if the API key is valid and has characters permissions.""" ]
-              } |> subRequest
-              , Cmd.none )
+            ReceivedBank (Err err) ->
+                ( { model 
+                      | errors = ( "Error loading the bank from the GW2 API: "
+                          ++ httpErrString err)
+                          :: model.errors
+                  }
+                  |> subRequest
+                , Cmd.none )
 
-        ReceivedCharacters (Err err) ->
-            ( { model 
-                | errors = ( "Error loading the characters from the GW2 API: "
-                            ++ httpErrString err)
-                            :: model.errors
-              }
-              |> subRequest
-            , Cmd.none )
+            ReceivedBank (Ok bankSlots) ->
+                    ( { model | bank = bankSlots } |> subRequest, Cmd.none )
+                    |> loadItemNames bankSlots model.itemSpecs
 
-        ReceivedCharacters (Ok characters) ->
-            let
-                items =
-                    characters
-                    |> List.map .bags
-                    |> List.concat
+            ReceivedSharedInventory (Err (Http.BadStatus 401)) ->
+                -- This happens when the API key is invalid or does not have sufficient permissions.
+                ( { model
+                    | page = Configure
+                    , errors = [ """Error 401 from the GW2 API while loading the shared inventory.
+    Please check if the API key is valid and has inventory permissions.""" ]
+                  } |> subRequest
+                  , Cmd.none )
 
-                newmodel = { model | characters =
-                        characters
-                        |> List.map (\ ch -> ( ch.name, ch ) )
+            ReceivedSharedInventory (Err err) ->
+                ( { model 
+                      | errors = ( "Error loading the shared inventory from the GW2 API: "
+                          ++ httpErrString err)
+                          :: model.errors
+                  }
+                  |> subRequest
+                , Cmd.none )
+
+            ReceivedSharedInventory (Ok invSlots) ->
+                    ( { model | sharedInventory = invSlots } |> subRequest, Cmd.none )
+                    |> loadItemNames invSlots model.itemSpecs
+
+            ReceivedItemSpecs (Err (Http.BadStatus 404)) ->
+                -- This happens when an item ID is unknown to the items endpoint.
+                -- The item ID is of no use to the user, so we ignore this specific error code.
+                ( model |> subRequest, Cmd.none )
+
+            ReceivedItemSpecs (Err err) ->
+                ( { model 
+                    | errors = ( "Error loading item names from the GW2 API: "
+                                ++ httpErrString err)
+                                :: model.errors
+                  }
+                  |> subRequest
+                , Cmd.none )
+
+            ReceivedItemSpecs (Ok specs) ->
+                let
+                    itemSpecs
+                         = specs
+                        |> List.map (\a -> (a.id, a) )
                         |> Dict.fromList
-                    }
-                    |> subRequest
+                        |> Dict.union model.itemSpecs
 
-                cnames = List.map .name characters
-            in
-                List.foldl loadEquipment ( newmodel, Cmd.none ) cnames
-                |> loadItemNames items model.itemSpecs
-                
-        ReceivedEquipment _ (Err (Http.BadStatus 401)) ->
-            -- This happens when the API key is invalid or does not have sufficient permissions.
-            ( { model
-                | status = Configure
-                , errors = [ """Error 401 from the GW2 API while loading equipment tabs.
-Please check if the API key is valid and has character permissions.""" ]
-              } |> subRequest
-              , Cmd.none )
+                in
+                    ( { model
+                        | itemSpecs = itemSpecs
+                        }
+                        |> subRequest
+                     , Cmd.none )
 
-        ReceivedEquipment _ (Err err) ->
-            ( { model 
-                  | errors = ( "Error loading equipment tabs from the GW2 API: "
-                      ++ httpErrString err)
-                      :: model.errors
-              }
-              |> subRequest
-            , Cmd.none )
+            ReceivedCharacters (Err (Http.BadStatus 401)) ->
+                -- This happens when the API key is invalid or does not have sufficient permissions.
+                ( { model
+                    | page = Configure
+                    , errors = [ """Error 401 from the GW2 API while loading the characters.
+    Please check if the API key is valid and has characters permissions.""" ]
+                  } |> subRequest
+                  , Cmd.none )
 
-        ReceivedEquipment name (Ok equip) ->
-            case Dict.get name model.characters of
-                Nothing ->
-                    ( model |> subRequest, Cmd.none )
+            ReceivedCharacters (Err err) ->
+                ( { model 
+                    | errors = ( "Error loading the characters from the GW2 API: "
+                                ++ httpErrString err)
+                                :: model.errors
+                  }
+                  |> subRequest
+                , Cmd.none )
 
-                Just oldChar ->
-                    let
-                        char = { oldChar | equipmentTabs = equip }
-                    in
-                        ( { model | characters = Dict.insert name char model.characters }
-                            |> subRequest
-                        , Cmd.none )
-                        |> loadItemNames equip model.itemSpecs
+            ReceivedCharacters (Ok characters) ->
+                let
+                    items =
+                        characters
+                        |> List.map .bags
+                        |> List.concat
+
+                    newmodel = { model | characters =
+                            characters
+                            |> List.map (\ ch -> ( ch.name, ch ) )
+                            |> Dict.fromList
+                        }
+                        |> subRequest
+
+                    cnames = List.map .name characters
+                in
+                    List.foldl loadEquipment ( newmodel, Cmd.none ) cnames
+                    |> loadItemNames items model.itemSpecs
+                    
+            ReceivedEquipment _ (Err (Http.BadStatus 401)) ->
+                -- This happens when the API key is invalid or does not have sufficient permissions.
+                ( { model
+                    | page = Configure
+                    , errors = [ """Error 401 from the GW2 API while loading equipment tabs.
+    Please check if the API key is valid and has character permissions.""" ]
+                  } |> subRequest
+                  , Cmd.none )
+
+            ReceivedEquipment _ (Err err) ->
+                ( { model 
+                      | errors = ( "Error loading equipment tabs from the GW2 API: "
+                          ++ httpErrString err)
+                          :: model.errors
+                  }
+                  |> subRequest
+                , Cmd.none )
+
+            ReceivedEquipment name (Ok equip) ->
+                case Dict.get name model.characters of
+                    Nothing ->
+                        ( model |> subRequest, Cmd.none )
+
+                    Just oldChar ->
+                        let
+                            char = { oldChar | equipmentTabs = equip }
+                        in
+                            ( { model | characters = Dict.insert name char model.characters }
+                                |> subRequest
+                            , Cmd.none )
+                            |> loadItemNames equip model.itemSpecs
 
 
 
@@ -301,7 +398,7 @@ view model =
     let
         title = "My Shiny Stuff"
 
-        filter = itemFilter model.activeTags model.shiny model.itemSpecs
+        filter = itemFilter (Dict.toList model.itemTags) (hasActiveStatsTagValues model.itemTags) model.shiny model.itemSpecs model.statsChoices
 
         (itemTagsBank, htmlBank) = viewContainer "Bank" model.itemSpecs filter model.bank
 
@@ -320,10 +417,10 @@ view model =
 
         tags = Dict.union itemTagsBank itemTagsChars
             |> Dict.union itemTagsShared
-            |> Dict.union model.activeTags
+            |> Dict.union model.itemTags
 
         content = 
-            case model.status of
+            case model.page of
 
                 Configure ->
                     viewConfigure model
@@ -393,11 +490,15 @@ viewControls shiny tags loading =
                 ]
             , div [ class "tags level-item" ]
                 (Dict.foldr
-                    (\t (TagValue active f) l ->
-                        case active of
-                            True ->
+                    (\t tagValue l ->
+                        case tagValue of
+                            StatsTagValue True ->
+                                (a [ class "tag active is-success", onClick (RemoveTag t) ] [ text t ]) :: l
+                            StatsTagValue False ->
+                                (a [ class "tag inactive is-success is-light", onClick (AddTag t (StatsTagValue True)) ] [ text t ]) :: l
+                            TagValue True _ ->
                                 (a [ class "tag active is-info", onClick (RemoveTag t) ] [ text t ]) :: l
-                            False ->
+                            TagValue False f ->
                                 (a [ class "tag inactive is-info is-light", onClick (AddTag t (TagValue True f)) ] [ text t ]) :: l
                     ) []
                     tags
@@ -451,45 +552,42 @@ viewInfo =
         ]
 
 
-extractTags : GW2.ItemSpec -> ItemTags
-extractTags it =
-    case it.iType.subType of
-        Just (GW2.Armor weight slot) ->
-            Dict.singleton slot
-                ( TagValue False
-                    (\i ->
-                     case i.iType.subType of
-                         Just (GW2.Armor _ slot2) -> slot == slot2
-                         _ -> False
-                    )
-                )
-            |> Dict.insert weight
-                ( TagValue False
-                    (\i ->
-                     case i.iType.subType of
-                         Just (GW2.Armor w _) -> weight == w
-                         _ -> False
-                    )
-                )
-
-        Just (GW2.Weapon w) ->
-            Dict.singleton w
-                ( TagValue False
-                    (\i ->
-                    case i.iType.subType of
-                        Just (GW2.Weapon w2) -> w == w2
-                        _ -> False
-                    )
-                )
-                   
-        _ ->
-            Dict.singleton it.iType.name ( TagValue False (\i -> i.iType.name == it.iType.name) )
-
-
 viewItem : GW2.ItemSpec -> (ItemTags, Html Msg)
 viewItem item =
     let
-        tags = extractTags item
+        tags =
+            case item.iType.subType of
+                Just (GW2.Armor weight slot) ->
+                    Dict.singleton slot
+                        ( TagValue False
+                            (\i ->
+                             case i.iType.subType of
+                                 Just (GW2.Armor _ slot2) -> slot == slot2
+                                 _ -> False
+                            )
+                        )
+                    |> Dict.insert weight
+                        ( TagValue False
+                            (\i ->
+                             case i.iType.subType of
+                                 Just (GW2.Armor w _) -> weight == w
+                                 _ -> False
+                            )
+                        )
+
+                Just (GW2.Weapon w) ->
+                    Dict.singleton w
+                        ( TagValue False
+                            (\i ->
+                            case i.iType.subType of
+                                Just (GW2.Weapon w2) -> w == w2
+                                _ -> False
+                            )
+                        )
+                           
+                _ ->
+                    Dict.singleton item.iType.name ( TagValue False (\i -> i.iType.name == item.iType.name) )
+
     in
         ( tags
         , div [ class "item has-popup" ]
@@ -499,10 +597,17 @@ viewItem item =
                  , p [ class "description" ] [ text (Maybe.withDefault "" item.description) ]
                  , p [ class "item-tags" ]
                      (Dict.foldr
-                         (\s (TagValue _ f) l ->
-                             a [ onClick (AddTag s (TagValue True f) ) ] [ text s ]
-                             :: ( text " " )
-                             :: l)
+                         (\s tagValue l ->
+                             case tagValue of
+                                 StatsTagValue _ ->
+                                     a [ class "is-success", onClick (AddTag s (StatsTagValue True) ) ] [ text s ]
+                                     :: ( text " " )
+                                     :: l
+                                 TagValue _ f ->
+                                     a [ class "is-info", onClick (AddTag s (TagValue True f) ) ] [ text s ]
+                                     :: ( text " " )
+                                     :: l
+                         )
                          [] tags)
                  ]
             ]
@@ -516,12 +621,27 @@ viewItem item =
 --     ]
 
 
-viewItems : Dict Int GW2.ItemSpec -> (GW2.ContainerItem -> Bool) -> (Html Msg -> Html Msg) -> List GW2.ContainerItem -> (ItemTags, Html Msg, Int)
+-- Returns a tuple of
+--   possible ItemTags
+--   the HTML code for displaying the item
+--   the number of items in this container that match the filter
+viewItems : Dict Int GW2.ItemSpec -> FilterFunction -> (Html Msg -> Html Msg) -> List GW2.ContainerItem -> (ItemTags, Html Msg, Int)
 viewItems specs filter wrapper allItems =
     let
-        items = List.filter filter allItems
+        (items, statNames) =
+            List.foldr
+                (\ it ((items0, sn0) as x0) ->
+                    case filter it of
+                        ( False, _ ) ->
+                            x0
 
-        (itemTags, itemHtml, n) = items
+                        ( True, sn ) ->
+                            ( it :: items0, Set.union sn0 sn)
+                )
+                ( [], Set.empty )
+                allItems
+
+        (itemTags1, itemHtml, n) = items
             |> List.foldr (\ { id } (t, l, n0) ->
                 case Dict.get id specs of
                     Just spec ->
@@ -540,11 +660,19 @@ viewItems specs filter wrapper allItems =
             _ ->
                 wrapper
                 ( div [ class "container", style "line-height" "0" ] itemHtml )
+
+        itemTags
+            = statNames
+            |> Set.toList
+            |> List.map (\ s -> ( s, StatsTagValue False ) )
+            |> Dict.fromList
+            |> Dict.union itemTags1
+
     in
         (itemTags, html, n)
 
 
-viewContainer : String -> Dict Int GW2.ItemSpec -> (GW2.ContainerItem -> Bool) -> List GW2.ContainerItem -> (ItemTags, Html Msg)
+viewContainer : String -> Dict Int GW2.ItemSpec -> FilterFunction -> List GW2.ContainerItem -> (ItemTags, Html Msg)
 viewContainer title specs filter container =
     let
         wrapper items =
@@ -560,7 +688,7 @@ viewContainer title specs filter container =
         (itemTags, html)
 
  
-viewCharacter : Dict Int GW2.ItemSpec -> (GW2.ContainerItem -> Bool) -> GW2.Character -> (ItemTags, Html Msg)
+viewCharacter : Dict Int GW2.ItemSpec -> FilterFunction -> GW2.Character -> (ItemTags, Html Msg)
 viewCharacter specs filter c =
     let
         wrapper title items =
@@ -659,19 +787,26 @@ loadItemNames items specs mc =
 
 
 loadItemNamesChunk : List Int -> ( Model , Cmd Msg ) -> ( Model , Cmd Msg )
-loadItemNamesChunk items mc =
+loadItemNamesChunk items (model, cmd) =
     let
         chunk = List.take 200 items
         remainder = List.drop 200 items
     in
         case chunk of
-            [] -> mc
+            [] -> (model, cmd)
             
             _ ->
-                mc
-                |> addRequest (GW2.itemsEndpoint chunk) ReceivedItemSpecs
+                (model, cmd)
+                |> addRequest (GW2.itemsEndpoint chunk model.itemStatsMap) ReceivedItemSpecs
                 |> loadItemNamesChunk remainder
 
+
+loadItemStats : ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+loadItemStats mc =
+    addRequest
+        GW2.itemStatsEndpoint
+        ReceivedItemStats
+        mc
 
 
 httpErrString : Http.Error -> String
@@ -695,8 +830,9 @@ httpErrString err =
 
 -- returns true if the item matches, false otherwise
 -- The shiny string is matched as case-insensitive substring.
-itemFilter : ItemTags -> String -> Dict Int GW2.ItemSpec -> GW2.ContainerItem -> Bool
-itemFilter tags shiny specs it =
+itemFilter : List (String, ItemTagValue) -> Bool -> String -> Dict Int GW2.ItemSpec -> StatsChoices -> GW2.ContainerItem
+        -> (Bool, Set String)
+itemFilter tags haveStatsTags shiny specs statsChoices it =
     let
         found = Dict.get it.id specs
 
@@ -705,32 +841,56 @@ itemFilter tags shiny specs it =
                 [] ->
                     True
 
-                ( TagValue False _ ) :: rest ->
+                -- no-op
+                ( _, StatsTagValue _ ) :: rest ->
                     matchTags rest sp
 
-                ( TagValue True f ) :: rest ->
+                ( _, TagValue False _ ) :: rest ->
+                    matchTags rest sp
+
+                ( _, TagValue True f ) :: rest ->
                     case f sp of
                         False ->
                             False
                         True ->
                             matchTags rest sp
 
+        matchStats : StatsChoices -> List Int -> ( Bool, Set String )
+        matchStats choices sp =
+           -- Find matching ItemStats, then extract the other stat names.
+           sp
+           |> List.filterMap (\ id -> Dict.get id statsChoices )
+           |> List.foldr (\ { stats } ( _, other ) ->
+                      ( True , Set.union other (Set.fromList stats) )
+                  )
+                  ( not haveStatsTags, Set.empty )
+
     in
+
         case found of
             Nothing ->
-                False
+                ( False, Set.empty )
 
             Just spec ->
-                case matchTags (Dict.values tags) spec of
+                case
+                    ( String.contains shiny (String.toLower spec.name)
+                    && matchTags tags spec
+                    )
+                of
                     False ->
-                        False
+                        ( False, Set.empty )
+
                     True ->
-                        case shiny of
-                            "" ->
-                                True
-                            _ ->
-                                -- match the shiny name
-                                String.contains shiny (String.toLower spec.name)
+                        matchStats statsChoices spec.statsChoices
+
+
+hasActiveStatsTagValues : ItemTags -> Bool
+hasActiveStatsTagValues
+    = Dict.values >> List.any (\ t ->
+        case t of
+            StatsTagValue True -> True
+            _ -> False
+        )
 
 
 -- vim: et sw=4 ts=4 tw=105

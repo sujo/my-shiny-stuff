@@ -30,16 +30,19 @@ type alias ItemType =
     , subType : Maybe ItemSubType
     }
 
+type alias ItemStats =
+    { name: String
+    , stats : List String
+    }
+
 type alias ItemSpec =
     { id : Int
     , name : String
     , iconUrl : Maybe String
     , description : Maybe String
     , iType : ItemType
-    , statsChoices : List String
+    , statsChoices : List Int
     }
-
-type alias ItemStats = Dict Int String
 
 
 -- Functions
@@ -97,8 +100,8 @@ itemTypeD =
             )
 
 
-itemsEndpoint : List Int -> ItemStats -> (String, JD.Decoder (List ItemSpec))
-itemsEndpoint ids stats =
+itemsEndpoint : List Int -> Dict Int ItemStats -> (String, JD.Decoder (List ItemSpec))
+itemsEndpoint ids statsMap =
     ( absolute [ "v2", "items" ] [ ids
         |> List.map String.fromInt
         |> String.join ","
@@ -109,21 +112,22 @@ itemsEndpoint ids stats =
         (JD.maybe (JD.field "icon" JD.string) )
         (JD.maybe (JD.field "description" JD.string) )
         itemTypeD
-        (JD.map
-            (List.filterMap (\id -> Dict.get id stats))
-            (JD.map2 (\inf ch ->
-                case (inf, ch) of
-                    (Nothing, Nothing) -> []
-                    (Nothing, Just l) -> l
-                    (Just s, Nothing) -> [s]
-                    (Just s, Just l) -> s::l
-                )
-                (JD.maybe
+        (JD.map2 (\inf ch ->
+            case (inf, ch) of
+                (Nothing, Nothing) -> []
+                (Nothing, Just l) -> l
+                (Just s, Nothing) -> [s]
+                (Just s, Just l) -> s::l
+            )
+            (JD.maybe
+                (JD.field "details"
                     (JD.field "infix_upgrade"
                         (JD.field "id" JD.int)
                     )
                 )
-                (JD.maybe
+            )
+            (JD.maybe
+                (JD.field "details"
                     (JD.field "stat_choices" (JD.list JD.int))
                 )
             )
@@ -131,18 +135,23 @@ itemsEndpoint ids stats =
     ) )
 
 
-itemStatsD : JD.Decoder (Dict Int String)
+itemStatsD : JD.Decoder (Dict Int ItemStats)
 itemStatsD =
     JD.map Dict.fromList
         ( JD.list
-            (JD.map2 Tuple.pair
+            (JD.map3 (\id name atts -> ( id, ItemStats name atts ) )
                 (JD.field "id" JD.int)
                 (JD.field "name" JD.string)
+                (JD.field "attributes"
+                    (JD.list
+                        (JD.field "attribute" JD.string)
+                    )
+                )
             )
         )
 
 
-itemStatsEndpoint : (String, JD.Decoder ItemStats)
+itemStatsEndpoint : (String, JD.Decoder (Dict Int ItemStats) )
 itemStatsEndpoint =
     ( absolute [ "v2", "itemstats" ] [ string "ids" "all" ]
     , itemStatsD

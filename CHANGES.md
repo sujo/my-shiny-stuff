@@ -4,13 +4,15 @@
 
 ### Features
 
-* Show item stats
-* Filter by item stats
 * Show binding info
 
 ### Fixes
 
 * Remove HTML tags from description texts received from the API
+
+## v1.2.0 / 2020-06-10
+
+* Filter by item stats
 
 ## v1.1.0 / 2020-06-04
 
