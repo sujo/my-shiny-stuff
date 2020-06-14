@@ -8,7 +8,7 @@
 
 ### Fixes
 
-## v1.2.1 / not released yet
+## v1.2.1 / 2020-06-14
 
 * Interpret HTML tags in description texts received from the API
 
