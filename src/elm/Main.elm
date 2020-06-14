@@ -34,9 +34,11 @@ type Page
 
 type alias StatsChoices = Dict Int GW2.ItemStats
 
+type alias ItemSpec = GW2.ItemSpec Msg
+
 -- Tag name isActive itemFilter
 type ItemTagValue 
-   = TagValue Bool (GW2.ItemSpec -> Bool)
+   = TagValue Bool (ItemSpec -> Bool)
    | StatsTagValue Bool -- single stat filter by the name of the tag, e.g. "Power"
 
 type alias ItemTags = Dict String ItemTagValue
@@ -53,7 +55,7 @@ type alias Model =
     , bank : List GW2.ContainerItem
     , sharedInventory : List GW2.ContainerItem
     , characters : Dict String GW2.Character
-    , itemSpecs : Dict Int GW2.ItemSpec
+    , itemSpecs : Dict Int ItemSpec
     , itemStatsMap : Dict Int GW2.ItemStats
     , loading : Int
     , shiny : String
@@ -109,7 +111,7 @@ type Msg
     | ReceivedItemStats (Result Http.Error (Dict Int GW2.ItemStats) )
     | ReceivedBank (Result Http.Error (List GW2.ContainerItem) )
     | ReceivedSharedInventory (Result Http.Error (List GW2.ContainerItem) )
-    | ReceivedItemSpecs (Result Http.Error (List GW2.ItemSpec) )
+    | ReceivedItemSpecs (Result Http.Error (List ItemSpec) )
     | ReceivedCharacters (Result Http.Error (List GW2.Character) )
     | ReceivedEquipment String (Result Http.Error (List GW2.ContainerItem) )
 
@@ -552,7 +554,7 @@ viewInfo =
         ]
 
 
-viewItem : GW2.ItemSpec -> (ItemTags, Html Msg)
+viewItem : ItemSpec -> (ItemTags, Html Msg)
 viewItem item =
     let
         tags =
@@ -594,7 +596,7 @@ viewItem item =
             [ img [  style "height" "64px", style "margin" "2px", src (Maybe.withDefault "" item.iconUrl) ] []
             , div [ class "popup" ]
                  [ p [ class "itemname" ] [ text item.name ]
-                 , p [ class "description" ] [ text (Maybe.withDefault "" item.description) ]
+                 , p [ class "description" ] item.description
                  , p [ class "item-tags" ]
                      (Dict.foldr
                          (\s tagValue l ->
@@ -625,7 +627,7 @@ viewItem item =
 --   possible ItemTags
 --   the HTML code for displaying the item
 --   the number of items in this container that match the filter
-viewItems : Dict Int GW2.ItemSpec -> FilterFunction -> (Html Msg -> Html Msg) -> List GW2.ContainerItem -> (ItemTags, Html Msg, Int)
+viewItems : Dict Int ItemSpec -> FilterFunction -> (Html Msg -> Html Msg) -> List GW2.ContainerItem -> (ItemTags, Html Msg, Int)
 viewItems specs filter wrapper allItems =
     let
         (items, statNames) =
@@ -672,7 +674,7 @@ viewItems specs filter wrapper allItems =
         (itemTags, html, n)
 
 
-viewContainer : String -> Dict Int GW2.ItemSpec -> FilterFunction -> List GW2.ContainerItem -> (ItemTags, Html Msg)
+viewContainer : String -> Dict Int ItemSpec -> FilterFunction -> List GW2.ContainerItem -> (ItemTags, Html Msg)
 viewContainer title specs filter container =
     let
         wrapper items =
@@ -688,7 +690,7 @@ viewContainer title specs filter container =
         (itemTags, html)
 
  
-viewCharacter : Dict Int GW2.ItemSpec -> FilterFunction -> GW2.Character -> (ItemTags, Html Msg)
+viewCharacter : Dict Int ItemSpec -> FilterFunction -> GW2.Character -> (ItemTags, Html Msg)
 viewCharacter specs filter c =
     let
         wrapper title items =
@@ -773,7 +775,7 @@ loadEquipment name ( model, cmd ) =
         ( model, cmd )
 
 
-loadItemNames : List GW2.ContainerItem -> Dict Int GW2.ItemSpec -> ( Model , Cmd Msg ) -> ( Model, Cmd Msg )
+loadItemNames : List GW2.ContainerItem -> Dict Int ItemSpec -> ( Model , Cmd Msg ) -> ( Model, Cmd Msg )
 loadItemNames items specs mc =
     let
         unique_missing = items
@@ -830,7 +832,7 @@ httpErrString err =
 
 -- returns true if the item matches, false otherwise
 -- The shiny string is matched as case-insensitive substring.
-itemFilter : List (String, ItemTagValue) -> Bool -> String -> Dict Int GW2.ItemSpec -> StatsChoices -> GW2.ContainerItem
+itemFilter : List (String, ItemTagValue) -> Bool -> String -> Dict Int ItemSpec -> StatsChoices -> GW2.ContainerItem
         -> (Bool, Set String)
 itemFilter tags haveStatsTags shiny specs statsChoices it =
     let

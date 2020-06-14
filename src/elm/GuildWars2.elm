@@ -4,6 +4,9 @@ import Http
 import Url.Builder exposing (absolute, int, string)
 import Json.Decode as JD
 import Dict exposing (Dict)
+import Html exposing (Html)
+import Html.Attributes exposing (class)
+import Parser as P exposing ((|.), (|=))
 
 
 -- Types
@@ -35,11 +38,11 @@ type alias ItemStats =
     , stats : List String
     }
 
-type alias ItemSpec =
+type alias ItemSpec msg =
     { id : Int
     , name : String
     , iconUrl : Maybe String
-    , description : Maybe String
+    , description : List (Html msg)
     , iType : ItemType
     , statsChoices : List Int
     }
@@ -100,7 +103,70 @@ itemTypeD =
             )
 
 
-itemsEndpoint : List Int -> Dict Int ItemStats -> (String, JD.Decoder (List ItemSpec))
+textP =
+    P.map Html.text <|
+    P.getChompedString <|
+        P.succeed ()
+        |. P.chompIf (\c -> c /= '<')
+        |. P.chompWhile (\c -> c /= '<')
+
+
+cTagP att =
+    P.succeed identity
+    |. P.token ("<c=@" ++ att ++ ">")
+    |= textP
+    |. P.token "</c>"
+
+
+flavorP =
+    P.map ( \t -> Html.p [class "is-italic"] [t] )
+    <| cTagP "flavor"
+
+
+otherHtmlP =
+    P.succeed (Html.text "")
+    |. P.chompIf (\c -> c == '<')
+    |. P.chompWhile (\c -> c /= '>')
+    |. P.chompIf (\c -> c == '>')
+
+
+brP =
+    P.succeed (Html.br [] [])
+    |. P.token "<br>"
+
+
+strToHtml : String -> List (Html msg)
+strToHtml s =
+    let
+        parsed = P.run
+            ( P.loop [] (\ hs -> 
+                    P.oneOf
+                        [ P.succeed (\h -> P.Loop (h :: hs))
+                            |= P.oneOf
+                                [ cTagP "abilitytype"
+                                , flavorP
+                                , brP
+                                , otherHtmlP
+                                , textP
+                                ]
+                        , P.succeed <| P.Done (List.reverse hs)
+                        ]
+                )
+            )
+            s
+
+    in
+        case parsed of
+            Ok res -> res
+            Err err -> [ Html.text s ]
+
+
+htmlStringD : JD.Decoder (List (Html msg))
+htmlStringD =
+    JD.map strToHtml JD.string
+
+
+itemsEndpoint : List Int -> Dict Int ItemStats -> (String, JD.Decoder (List (ItemSpec msg)))
 itemsEndpoint ids statsMap =
     ( absolute [ "v2", "items" ] [ ids
         |> List.map String.fromInt
@@ -110,7 +176,9 @@ itemsEndpoint ids statsMap =
         (JD.field "id" JD.int)
         (JD.field "name" JD.string)
         (JD.maybe (JD.field "icon" JD.string) )
-        (JD.maybe (JD.field "description" JD.string) )
+        (JD.map (Maybe.withDefault [])
+            (JD.maybe (JD.field "description" htmlStringD) )
+        )
         itemTypeD
         (JD.map2 (\inf ch ->
             case (inf, ch) of

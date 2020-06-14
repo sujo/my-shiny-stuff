@@ -8,7 +8,9 @@
 
 ### Fixes
 
-* Remove HTML tags from description texts received from the API
+## v1.2.1 / not released yet
+
+* Interpret HTML tags in description texts received from the API
 
 ## v1.2.0 / 2020-06-10
 
